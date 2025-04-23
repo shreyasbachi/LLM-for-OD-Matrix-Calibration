@@ -15,11 +15,9 @@ import subprocess
 import timeit
 import shutil
 from pathlib import Path
-
 import pandas as pd
 from dotenv import load_dotenv
 from utils import extrac_column_info
-
 
 #  ENV & CONFIG
 load_dotenv()

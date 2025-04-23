@@ -1,3 +1,4 @@
 results/
 logs/
 run_scripts/
+.env

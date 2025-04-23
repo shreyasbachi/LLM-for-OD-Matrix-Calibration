@@ -8,12 +8,14 @@
       "initial_demand_xlsm": "data/demand_calibrate.xlsm",
       "results": "results",
       "logs": "logs",
-      "datasets_dir":"datasets"
+      "datasets_dir":"datasets",
+      "gt_data": "data/ground_truth_obs_count.json"
     },
     "hyperparams": {
       "num_iterations": 5,
-      "max_global_iterations": 10,
+      "max_global_iterations": 100,
       "max_fail_passes": 3
-    }
+    },
+    "timestamp": "10_00_AM"
   }
   

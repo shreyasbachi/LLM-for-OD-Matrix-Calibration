@@ -4,21 +4,20 @@ import subprocess
 from utils import get_error, extrac_column_info
 import torch
 from transformers import LlamaForCausalLM, AutoTokenizer, AutoModelForCausalLM
-from accelerate import init_empty_weights, load_checkpoint_and_dispatch
 import timeit
 import random
 import os
 import datetime
-import accelerate
 from dotenv import load_dotenv
 from huggingface_hub import hf_hub_download
 import re
 import json
+from pathlib import Path
+import shutil
 
 # configure env keys
 load_dotenv()
 HUGGING_FACE_API_KEY = os.getenv("HUGGING_FACE_API_KEY")
-
 experience_mode = 'column_experi' # ["record_best", "column_experi", "origin_data"]
 np.set_printoptions(threshold=np.inf)
 
@@ -35,14 +34,26 @@ working_dir = os.path.join(PROJECT_ROOT, config["paths"]["working_dir"])
 link_performance_csv = os.path.join(PROJECT_ROOT, config["paths"]["link_performance"])
 link_perform_odlink = os.path.join(PROJECT_ROOT, config["paths"]["link_perform_odlink"])
 initial_demand_xlsm = os.path.join(PROJECT_ROOT, config["paths"]["initial_demand_xlsm"])
-results_path = os.path.join(PROJECT_ROOT, "results")
+gt_path = os.path.join(PROJECT_ROOT, config["paths"]["gt_data"])
+with open(gt_path, "r") as f:
+    gt_json = json.load(f)
+timestamp = config["timestamp"]
+gt_entries = gt_json[timestamp]
+gt_dict = {str(e["link_id"]): e["obs_count"] for e in gt_entries}
+results_path = os.path.join(PROJECT_ROOT, "results", timestamp)
 if not os.path.exists(results_path):
     os.makedirs(results_path, exist_ok=True)
 
+print(f"Writing all logs/results into {results_path}")
+shutil.copy(initial_demand_xlsm, os.path.join(results_path, Path(initial_demand_xlsm).name))
+shutil.copy(link_performance_csv, os.path.join(results_path, Path(link_performance_csv).name))
 # Run the simulation executable
-subprocess.run(["wine64", exe_path], cwd=data_path)
+#subprocess.run(["wine64", exe_path], cwd=data_path)
 
 if experience_mode == "column_experi":
+    SEED = 42
+    np.random.seed(SEED)
+    random.seed(SEED)
     file_path  = initial_demand_xlsm
     df_ini = extrac_column_info(file_path)
     matrix_holder = []
@@ -51,9 +62,12 @@ if experience_mode == "column_experi":
         for j, col in enumerate(df_ini.columns[0:], start=0):
             if i != j:
                 # Random value assignment, can be adjusted if needed
-                matrix_holder.append(df_ini.at[row, col])
+                sampled_value = np.random.randint(0, 500)
+                matrix_holder.append(sampled_value)
+                #matrix_holder.append(df_ini.at[row, col])
             else:
-                pass
+                #pass
+                matrix_holder.append(0)
     starting_solution = np.array(matrix_holder)#(3080,)
 
 starting_solution = starting_solution.reshape(1, -1) # (1, 3080)
@@ -83,94 +97,88 @@ def flatten_od_matrix(matrix, size=56):
                 holder.append(matrix[i, j])
     return np.array(holder)  # shape (3080,)
 
-def calculate_mse(matrix, data_path, exe_path, results_path, link_performance_csv): 
-        # matrix: 56 * 56
-        # Convert matrix to demand file and run simulation
+def calculate_mse(matrix, data_path, exe_path, results_path, link_performance_csv, gt_dict): 
+    # matrix: 56 * 56
+    # Convert matrix to demand file and run simulation
 
-        index_and_columns = [
-        '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '602', '615', '617', 
-        '619', '620', '621', '622', '623', '624', '625', '626', '627', '628', '633', '637', '640', '645', '646', '647', 
-        '649', '650', '651', '652', '653', '654', '766', '767', '2061', '2125', '2136', '2137', '2142', '2146', '2147', 
-        '2148', '2166', '2197'
-        ]
+    index_and_columns = [
+    '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '602', '615', '617', 
+    '619', '620', '621', '622', '623', '624', '625', '626', '627', '628', '633', '637', '640', '645', '646', '647', 
+    '649', '650', '651', '652', '653', '654', '766', '767', '2061', '2125', '2136', '2137', '2142', '2146', '2147', 
+    '2148', '2166', '2197'
+    ]
 
-        # Initialize the DataFrame.
-        df = pd.DataFrame(index=index_and_columns, columns=index_and_columns)
+    # Initialize the DataFrame.
+    df = pd.DataFrame(index=index_and_columns, columns=index_and_columns)
 
-        # overwrite the new content, avoid diagonal keep as 0, avoid first row and column
-        for i, row in enumerate (df.index[0:], start=0):
-            for j, col in enumerate(df.columns[0:], start=0):
-                # if i != j-1:
-                    # Random value assignment, can be adjusted if needed
-                    df.at[row, col] = matrix[i, j]
+    # overwrite the new content, avoid diagonal keep as 0, avoid first row and column
+    for i, row in enumerate (df.index[0:], start=0):
+        for j, col in enumerate(df.columns[0:], start=0):
+            # if i != j-1:
+                # Random value assignment, can be adjusted if needed
+                df.at[row, col] = matrix[i, j]
 
-        demand_path = os.path.join(data_path, "demand.csv")
-        df.to_csv(demand_path)
-        # simulate 
-        # Run the executable
-        start = timeit.default_timer()
-        subprocess.run(["wine64", exe_path], cwd=data_path)
-        stop = timeit.default_timer()
-        total = stop - start
-        print(f"Time taken for one simulation: {total}")
+    demand_path = os.path.join(data_path, "demand.csv")
+    df.to_csv(demand_path)
+    # simulate 
+    # Run the executable
+    start = timeit.default_timer()
+    subprocess.run(["wine64", exe_path], cwd=data_path)
+    stop = timeit.default_timer()
+    total = stop - start
+    print(f"Time taken for one simulation: {total}")
 
-        mse_start = timeit.default_timer()
-        mse = get_error(file_path=link_performance_csv)
-        mse_stop = timeit.default_timer()
-        mse_total = mse_stop - mse_start
-        print(f"Time taken for MSE: {mse_total}")
-        mse_history_file = os.path.join(results_path, "mse_history.txt")
-        with open(mse_history_file, 'a+') as file:
-            file.write(str(mse)+"\n")
-        return mse
+    mse_start = timeit.default_timer()
+    df_sim = pd.read_csv(link_performance_csv, usecols=["link_id", "volume"])
+    df_sim["link_id"] = df_sim["link_id"].astype(str)
+    df_valid = df_sim[df_sim["link_id"].isin(gt_dict)]
+
+    sim_vol = df_valid["volume"].astype(float).to_numpy()
+    if len(sim_vol) == 0:
+        raise RuntimeError("No matching link_ids found between simulation and GT—cannot compute MSE.")
+    gt_vol  = df_valid["link_id"].map(gt_dict).astype(float).to_numpy()
+    mse = np.mean((sim_vol - gt_vol) ** 2)
+    
+    mse_stop = timeit.default_timer()
+    mse_total = mse_stop - mse_start
+    print(f"Time taken for MSE: {mse_total}")
+    mse_history_file = os.path.join(results_path, "mse_history.txt")
+    with open(mse_history_file, 'a+') as file:
+        file.write(str(mse)+"\n")
+    return mse
 
 # returns a dict with abs errors of all links
-def calculate_abs_error(link_performance_csv):
-    link_df = pd.read_csv(link_performance_csv)
-    abs_error_dict = {}
-    for _, row in link_df.iterrows():
-        link_id = str(row['link_id']).strip()
-        if pd.isna(row['volume']) or pd.isna(row['obs_count']):
+def calculate_abs_error(link_performance_csv, gt_dict):
+    df = pd.read_csv(link_performance_csv, usecols=["link_id", "volume"])
+    df["link_id"] = df["link_id"].astype(str)
+
+    abs_errors = {}
+    for link_id, sim_vol in zip(df["link_id"], df["volume"]):
+        gt = gt_dict.get(link_id)
+        if gt is None or pd.isna(sim_vol):   # skip if GT missing or NaN
             continue
-        
-        volume = float(row['volume'])
-        obs_count = float(row['obs_count'])
-        abs_error = abs(volume - obs_count)
-        abs_error_dict[link_id] = abs_error
-    # sort dict in decreasing order of abs_error values 
-    sorted_abs_error_dict = sorted(abs_error_dict, key = abs_error_dict.get, reverse = True)
-    return sorted_abs_error_dict
+        abs_errors[link_id] = abs(float(sim_vol) - float(gt))
+
+    # return link_ids sorted by descending error
+    return sorted(abs_errors, key=abs_errors.get, reverse=True)
 
 # returns abs error for a particular link id
-def get_abs_error(link_id, link_performance_csv):
-    link_df = pd.read_csv(link_performance_csv)
-    row = link_df[link_df['link_id'].astype(str) == str(link_id)]
-    if row.empty:
-        print(f"Warning: No entry found for link_id={link_id}")
-        return float('inf')
-    
-    # extract volume and observed count
-    volume = float(row.iloc[0]['volume'])
-    obs_count = float(row.iloc[0]['obs_count'])
-
-    # compute absolute error
-    abs_error = abs(volume - obs_count)
-    return abs_error
+def get_abs_error(link_id, link_performance_csv, gt_dict):
+    df = pd.read_csv(link_performance_csv, usecols=["link_id", "volume"])
+    df["link_id"] = df["link_id"].astype(str)
+    row = df[df["link_id"] == str(link_id)]
+    if row.empty or str(link_id) not in gt_dict:
+        return float("inf")
+    return abs(float(row.iloc[0]["volume"]) - float(gt_dict[str(link_id)]))
 
 # returns simulated_volume and obs_count (ground truth) for the given link_id
-def get_link_data(link_id, link_performance_csv):
-    df = pd.read_csv(link_performance_csv)
-    row = df[df['link_id'].astype(str) == str(link_id)]
-    if row.empty:
-        print(f"Warning: No entry found for link_id={link_id} in {link_performance_csv}")
+def get_link_data(link_id, link_performance_csv, gt_dict):
+    df = pd.read_csv(link_performance_csv, usecols=["link_id", "volume"])
+    df["link_id"] = df["link_id"].astype(str)
+    row = df[df["link_id"] == str(link_id)]
+    if row.empty or str(link_id) not in gt_dict:
         return None, None
-    # Check for NaN
-    if pd.isna(row.iloc[0]['volume']) or pd.isna(row.iloc[0]['obs_count']):
-        print(f"Warning: Link {link_id} has blank volume or obs_count, skipping.")
-        return None, None
-    volume = float(row.iloc[0]['volume'])
-    obs_count = float(row.iloc[0]['obs_count'])
-    return volume, obs_count
+    return float(row.iloc[0]["volume"]), float(gt_dict[str(link_id)])
 
 # sample od pairs link_id and path to the link_performance_odlink_delta2.csv
 def sample_od_pairs(link_id, link_perform_odlink, current_matrix):
@@ -278,7 +286,7 @@ def generate_output(prompt, model, tokenizer, working_dir, link_id, attempt, res
             do_sample = True
         )
     generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    logs_path = os.path.join(results_path, "logs")
+    logs_path = os.path.join(results_path, f"logs")
     if not os.path.exists(logs_path):
         os.makedirs(logs_path, exist_ok=True)
     output_path = os.path.join(logs_path, f"llama_raw_output{link_id}_attempt{attempt}.txt")
@@ -333,11 +341,11 @@ def log_improvement_and_save(
 
 # LLM Optimization Pipeline
 baseline_matrix = initial_matrix.copy()
-baseline_mse = calculate_mse(baseline_matrix, data_path, exe_path, results_path, link_performance_csv)
+baseline_mse = calculate_mse(baseline_matrix, data_path, exe_path, results_path, link_performance_csv, gt_dict)
 best_mse = baseline_mse
 best_matrix = baseline_matrix.copy()
 print(f"Baseline MSE: {baseline_mse}")
-sorted_links = calculate_abs_error(link_performance_csv)
+sorted_links = calculate_abs_error(link_performance_csv, gt_dict)
 top_links = sorted_links[:20] # top 20 links
 print(f"Top 20 links with highest abs error: {top_links}")
 current_matrix = baseline_matrix.copy()
@@ -359,7 +367,7 @@ for global_iter in range(max_global_iterations):
         break
     print(f"Global iteration: {global_iter}")
     # ensures to check sorted links after improvement was found. this is because simulated volume keeps changing
-    sorted_links = calculate_abs_error(link_performance_csv)
+    sorted_links = calculate_abs_error(link_performance_csv, gt_dict)
     sorted_links = [lk for lk in sorted_links if lk not in no_improvement_links] # if sorted link is in the not improved list, skip it
     if not sorted_links:
         print("No valid links remain for calibration. Exiting.")
@@ -383,19 +391,19 @@ for global_iter in range(max_global_iterations):
                 print(f"No OD pairs found for link {link_id}. Skipping.")
                 break
             # get absolute error for that link id
-            simulated_vol, obs_count = get_link_data(link_id, link_performance_csv)
+            simulated_vol, obs_count = get_link_data(link_id, link_performance_csv, gt_dict)
             if simulated_vol is None or obs_count is None:
                 print(f"Skipping link {link_id} due to missing data.")
                 continue
 
-            abs_error = get_abs_error(link_id, link_performance_csv)
+            abs_error = get_abs_error(link_id, link_performance_csv, gt_dict)
             prompt = model_prompt(link_id, abs_error, sampled_od_pairs, simulated_vol, obs_count)
             # pass everything to llm and output the dictionary
             llm_output_dict = generate_output(prompt, model, tokenizer, working_dir, link_id, attempt, results_path) 
             updated_pairs = llm_output_dict
             # update od matrix with new updated i,j pairs
             test_matrix = update_od_matrix(current_matrix, updated_pairs) 
-            new_mse = calculate_mse(test_matrix, data_path, exe_path, results_path, link_performance_csv) # recalculate mse by running simulation
+            new_mse = calculate_mse(test_matrix, data_path, exe_path, results_path, link_performance_csv, gt_dict) # recalculate mse by running simulation
             
             # is there an improvement
             if new_mse < baseline_mse:

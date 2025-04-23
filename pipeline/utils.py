@@ -40,13 +40,13 @@ def initialize_matrix():
     # print(df)
 
 
-def get_error(file_path=None):
+def get_error(file_path=None, obs_count_column = 'obs_count'):
 
     df = pd.read_csv(file_path, na_values='', keep_default_na=False).fillna(0)
 
     # Extract the 'volume' and 'obs_count' columns
     volume = df['volume'].tolist()
-    obs_count = df['obs_count'].tolist()
+    obs_count = df[obs_count_column].tolist()
 
 
     len_vol = len(volume)
