@@ -132,11 +132,17 @@ def calculate_mse(matrix, data_path, exe_path, results_path, link_performance_cs
     df_sim = pd.read_csv(link_performance_csv, usecols=["link_id", "volume"])
     df_sim["link_id"] = df_sim["link_id"].astype(str)
     df_valid = df_sim[df_sim["link_id"].isin(gt_dict)]
-
     sim_vol = df_valid["volume"].astype(float).to_numpy()
-    if len(sim_vol) == 0:
-        raise RuntimeError("No matching link_ids found between simulation and GT—cannot compute MSE.")
     gt_vol  = df_valid["link_id"].map(gt_dict).astype(float).to_numpy()
+
+    # ignore any zero on either side like get_error() did
+    no_zeros = (sim_vol != 0) & (gt_vol != 0)
+    sim_vol = sim_vol[no_zeros]
+    gt_vol  = gt_vol [no_zeros]
+
+    if sim_vol.size == 0:
+        raise RuntimeError("No matching non‐zero link volumes to compute MSE")
+
     mse = np.mean((sim_vol - gt_vol) ** 2)
     
     mse_stop = timeit.default_timer()
