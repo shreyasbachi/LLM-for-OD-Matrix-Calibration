@@ -4,7 +4,7 @@
       "data_path": "data",
       "working_dir": "pipeline",
       "link_performance": "data/link_performance.csv",
-      "link_perform_odlink": "data/link_performance_odlink_delta2.csv",
+      "link_perform_odlink": "data/link_performance_odlink.csv",
       "initial_demand_xlsm": "data/demand_calibrate.xlsm",
       "results": "results",
       "logs": "logs",

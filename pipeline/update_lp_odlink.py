@@ -1,10 +1,11 @@
 import pandas as pd
 import ast
+import os
 
 mapping_path    = 'data/od_links_mapping.csv'
 link_perf_path  = 'data/link_performance_odlink.csv'
 demand_path     = 'data/demand.csv'
-output_path     = 'data/link_performance_odlink_updated.csv'
+output_path     = 'data/link_performance_odlink.csv'
 
 # Load the OD links mapping
 mapping_df = pd.read_csv(mapping_path)
@@ -14,7 +15,7 @@ link_od_map = {}
 for _, row in mapping_df.iterrows():
     o_zone = row['o_zone_id']
     d_zone = row['d_zone_id']
-    # parse the 'links' column (a Python list literal, or fallback to comma‐split)
+    # parse the links column
     try:
         links = ast.literal_eval(row['links'])
     except Exception:
@@ -66,5 +67,7 @@ for idx, row in link_perf_df.iterrows():
     link_perf_df.at[idx, 'od_zone_pairs']  = fmt_zone(zone_pairs)
 
 # Save your updated file
+if os.path.exists(output_path):
+    os.remove(output_path)
 link_perf_df.to_csv(output_path, index=False)
 print("link_performance_odlink_updated.csv written successfully.")

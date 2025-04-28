@@ -1,9 +1,11 @@
 # od link mappings from route_assignment.csv
 
 import pandas as pd
+import os
+import ast
 
 route_assignment = pd.read_csv('data/route_assignment.csv')
-
+output_path = 'data/od_links_mapping.csv'
 # Create a dictionary to collect links for each (o_zone_id, d_zone_id)
 od_links_dict = {}
 
@@ -46,7 +48,8 @@ for (o_zone, d_zone), link_set in od_links_dict.items():
 
 result_df = pd.DataFrame(records)
 
-# Step 6: Save to CSV 
-result_df.to_csv('data/od_links_mapping.csv', index=False)
-
+# Save to CSV 
+if os.path.exists(output_path):
+    os.remove(output_path)
+result_df.to_csv(output_path, index=False)
 print("Finished building OD to links mapping!")

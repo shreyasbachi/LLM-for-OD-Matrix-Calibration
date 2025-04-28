@@ -3,7 +3,8 @@ import pandas as pd
 import subprocess
 from utils import get_error, extrac_column_info
 import torch
-from transformers import LlamaForCausalLM, AutoTokenizer, AutoModelForCausalLM
+#from transformers import LlamaForCausalLM, AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer
 import timeit
 import random
 import os
@@ -14,7 +15,7 @@ import re
 import json
 from pathlib import Path
 import shutil
-#from vllm import LLM, SamplingParams
+from vllm import LLM, SamplingParams
 
 # configure env keys
 load_dotenv()
@@ -51,21 +52,76 @@ shutil.copy(link_performance_csv, os.path.join(results_path, Path(link_performan
 # Run the simulation executable
 #subprocess.run(["wine64", exe_path], cwd=data_path)
 
-#file_path  = initial_demand_xlsm
-demand_csv = os.path.join(PROJECT_ROOT, "datasets", "demand", "demand_12:00 PM.csv")
-demand_df = pd.read_csv(demand_csv, index_col=0)
-#df_ini = extrac_column_info(file_path)
-zone_labels = list(demand_df.index.astype(str))
-initial_matrix = demand_df.to_numpy(dtype=float)
-np.fill_diagonal(initial_matrix, 0.0)
-current_matrix = initial_matrix.copy()
+if experience_mode == "column_experi":
+    SEED = 42
+    np.random.seed(SEED)
+    random.seed(SEED)
+    file_path  = initial_demand_xlsm
+    df_ini = extrac_column_info(file_path)
+    matrix_holder = []
+    # over write the new content, avoid diagonal keep as 0, avoid first row and column
+    for i, row in enumerate (df_ini.index[0:], start=0):
+        for j, col in enumerate(df_ini.columns[0:], start=0):
+            if i != j:
+                # Random value assignment, can be adjusted if needed
+                sampled_value = np.random.randint(0, 500)
+                matrix_holder.append(sampled_value)
+                #matrix_holder.append(df_ini.at[row, col])
+            else:
+                #pass
+                matrix_holder.append(0)
+    starting_solution = np.array(matrix_holder)#(3080,)
+
+starting_solution = starting_solution.reshape(1, -1) # (1, 3080)
+
+# function to construct 56x56 matrix from OD vector with diagonal as 0s
+def unflatten_od_vector(od_vector, size = 56):
+    matrix = np.zeros((size, size))
+    k = 0
+    for i in range(size):
+        for j in range(size):
+            if i != j:
+                matrix[i, j] = od_vector[k]
+                k+=1
+            else:
+                pass
+    return matrix
+
+flat_vector = starting_solution[0]  # shape (3080,)
+initial_matrix = unflatten_od_vector(flat_vector, size=56)
+
+# flatten a 56x56 matrix (ignoring diagonals, i != j) into a 3080-element array.
+def flatten_od_matrix(matrix, size=56):
+    holder = []
+    for i in range(size):
+        for j in range(size):
+            if i != j:
+                holder.append(matrix[i, j])
+    return np.array(holder)  # shape (3080,)
 
 def calculate_mse(matrix, data_path, exe_path, results_path, link_performance_csv, gt_dict): 
     # matrix: 56 * 56
     # Convert matrix to demand file and run simulation
 
-    pd.DataFrame(matrix, index=zone_labels, columns=zone_labels).to_csv(os.path.join(data_path, "demand.csv"))
+    index_and_columns = [
+    '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '602', '615', '617', 
+    '619', '620', '621', '622', '623', '624', '625', '626', '627', '628', '633', '637', '640', '645', '646', '647', 
+    '649', '650', '651', '652', '653', '654', '766', '767', '2061', '2125', '2136', '2137', '2142', '2146', '2147', 
+    '2148', '2166', '2197'
+    ]
 
+    # Initialize the DataFrame.
+    df = pd.DataFrame(index=index_and_columns, columns=index_and_columns)
+
+    # overwrite the new content, avoid diagonal keep as 0, avoid first row and column
+    for i, row in enumerate (df.index[0:], start=0):
+        for j, col in enumerate(df.columns[0:], start=0):
+            # if i != j-1:
+                # Random value assignment, can be adjusted if needed
+                df.at[row, col] = matrix[i, j]
+
+    demand_path = os.path.join(data_path, "demand.csv")
+    df.to_csv(demand_path)
     # simulate 
     # Run the executable
     start = timeit.default_timer()
@@ -73,8 +129,6 @@ def calculate_mse(matrix, data_path, exe_path, results_path, link_performance_cs
     stop = timeit.default_timer()
     total = stop - start
     print(f"Time taken for one simulation: {total}")
-    subprocess.run(["python3", "pipeline/od_link_mapping_route.py"], cwd=PROJECT_ROOT, check = True)
-    subprocess.run(["python3", "pipeline/update_lp_odlink.py"], cwd=PROJECT_ROOT, check = True)
 
     mse_start = timeit.default_timer()
     df_sim = pd.read_csv(link_performance_csv, usecols=["link_id", "volume"])
@@ -135,35 +189,30 @@ def get_link_data(link_id, link_performance_csv, gt_dict):
     return float(row.iloc[0]["volume"]), float(gt_dict[str(link_id)])
 
 # sample od pairs link_id and path to the link_performance_odlink_delta2.csv
-def sample_od_pairs(link_id, link_perform_odlink, current_matrix, top_k: int = 30):
-    df = pd.read_csv(link_perform_odlink, dtype=str)
-    row = df[df['link_id'] == link_id]
+def sample_od_pairs(link_id, link_perform_odlink, current_matrix):
+    link_df = pd.read_csv(link_perform_odlink)
+    row = link_df[link_df['link_id'] == link_id]
     if row.empty:
+        # if no row is found, return an empty list
         print(f"No entry found for link_id={link_id}")
         return []
-
-    # 2) Parse the od_pairs string into (i,j) tuples
-    od_str = row.iloc[0]['od_pairs'] or ""
-    parsed = re.findall(r"\((\d+),\s*(\d+)\)", od_str)
-    if not parsed:
+    # get od pairs from row
+    od_str = str(row.iloc[0]['od_pairs']).strip()
+    if not od_str:
         print(f"No OD pairs listed for link_id={link_id}")
         return []
-
-    # 3) Build a list of ((i,j), flow) for all pairs
-    pairs_with_flow = []
-    for i_str, j_str in parsed:
-        i, j = int(i_str), int(j_str)
-        # guard in case current_matrix shape mismatches
-        if 0 <= i < current_matrix.shape[0] and 0 <= j < current_matrix.shape[1]:
-            flow = float(current_matrix[i, j])
-            pairs_with_flow.append(((i, j), flow))
-
-    if not pairs_with_flow:
-        return []
-
-    # 4) Sort by flow descending and pick top_k
-    pairs_with_flow.sort(key=lambda x: x[1], reverse=True)
-    return pairs_with_flow[:min(top_k, len(pairs_with_flow))]
+    # parse string for pairs of form (i, j)
+    pairs_list = re.findall(r"\(\d+,\d+\)", od_str)
+    sample_size = min(20, len(pairs_list))
+    sampled_od_pairs = random.sample(pairs_list, sample_size)
+    # i,j and value
+    od_pair_val = []
+    for rp in sampled_od_pairs:
+        i_str, j_str = rp.strip("()").split(",")
+        i_int, j_int = int(i_str), int(j_str)
+        flow_val = current_matrix[i_int, j_int]
+        od_pair_val.append(((i_int, j_int), flow_val))
+    return od_pair_val
 
 # load LLaMa 3.3-70B model
 model_name = "meta-llama/Llama-3.3-70B-Instruct"
@@ -172,18 +221,17 @@ tokenizer = AutoTokenizer.from_pretrained(
     use_auth_token=HUGGING_FACE_API_KEY
 )
 
-""" llm = LLM(
+llm = LLM(
     model=model_name,
     tensor_parallel_size=2,
     dtype="float16",               # FP16 inference
-) """
-
-# Initialize an empty model
+)
+""" # Initialize an empty model
 model = AutoModelForCausalLM.from_pretrained(
     model_name, 
     device_map="auto", 
     torch_dtype=torch.float16)
-model.eval()
+model.eval() """
 
 def model_prompt(link_id, abs_error, sampled_od_pairs, simulated_vol, obs_count):
     """
@@ -204,7 +252,7 @@ def model_prompt(link_id, abs_error, sampled_od_pairs, simulated_vol, obs_count)
     The ground truth volume: {obs_count}
     The absolute error, which is calculated as: abs(Simulated Volume - Ground Truth Volume) = {abs_error}
 
-    The following {sample_size} highest‐flow OD elements (i,j) that contribute most to this link, along with their current flow values:
+    The following {sample_size} randomly sampled OD elements (i,j) that contribute to this link, along with their current flow values:
     {pairs_str}
 
     Your Task:
@@ -244,18 +292,32 @@ def parse_llm_output(model_output):
 def generate_output(prompt, model, tokenizer, working_dir, link_id, attempt, results_path):
     matrix_start = timeit.default_timer()
     inputs = tokenizer(prompt, return_tensors = "pt").to("cuda")
+    prompt_text = prompt
 
-    with torch.no_grad():
+    sampling_params = SamplingParams(
+        temperature=0.7,
+        top_p=0.9,
+        top_k=50,
+        max_tokens=4000,          # # of tokens to generate beyond prompt
+    )
+
+    responses = llm.generate(
+        tokenizer=tokenizer,
+        prompt=prompt_text,
+        sampling_params=sampling_params,
+        use_streaming=False
+    )
+    """ with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens = 1000,
+            max_new_tokens = 4000,
             temperature = 0.7,
-            do_sample = True,
-            top_p=0.9,
-            top_k=50,
-        )
+            do_sample = True
+        ) """
 
-    generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    generation = next(responses)
+    generated_text = generation.outputs[0].text
+    #generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
     logs_path = os.path.join(results_path, f"logs")
     if not os.path.exists(logs_path):
         os.makedirs(logs_path, exist_ok=True)
@@ -356,7 +418,7 @@ for global_iter in range(max_global_iterations):
         # 5 attempts for each link
         for attempt in range(num_iterations):
             print(f"\nLink: {link_id}, Attempt: {attempt+1} of 5")
-            sampled_od_pairs = sample_od_pairs(link_id, link_perform_odlink, current_matrix, top_k = 30)
+            sampled_od_pairs = sample_od_pairs(link_id, link_perform_odlink, current_matrix)
             if not sampled_od_pairs:
                 print(f"No OD pairs found for link {link_id}. Skipping.")
                 break
@@ -369,7 +431,7 @@ for global_iter in range(max_global_iterations):
             abs_error = get_abs_error(link_id, link_performance_csv, gt_dict)
             prompt = model_prompt(link_id, abs_error, sampled_od_pairs, simulated_vol, obs_count)
             # pass everything to llm and output the dictionary
-            llm_output_dict = generate_output(prompt, model, tokenizer, working_dir, link_id, attempt, results_path) 
+            llm_output_dict = generate_output(prompt, llm, tokenizer, working_dir, link_id, attempt, results_path) 
             updated_pairs = llm_output_dict
             # update od matrix with new updated i,j pairs
             test_matrix = update_od_matrix(current_matrix, updated_pairs) 
@@ -396,6 +458,11 @@ for global_iter in range(max_global_iterations):
                     updated_pairs=updated_pairs,
                     best_matrix=best_matrix
                 )
+                # comparison to genetic algorithm performance
+                if new_mse < 27800:
+                    print(f"MSE {new_mse:.4f} is below 27,800. Stopping global iterations early.")
+                    early_stop = True
+                #improvement_this_cycle = True
                 break
 
         if not improvement_found:
