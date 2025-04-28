@@ -60,23 +60,26 @@ initial_matrix = demand_df.to_numpy(dtype=float)
 np.fill_diagonal(initial_matrix, 0.0)
 current_matrix = initial_matrix.copy()
 
+def run_simulation(matrix):
+    """
+    Write out matrix to demand.csv, run simulator and pipelines,
+    and overwrite link_performance_csv with those new volumes.
+    """
+    # 1) write the demand file
+    pd.DataFrame(matrix, index=zone_labels, columns=zone_labels) \
+      .to_csv(os.path.join(data_path, "demand.csv"))
+
+    # 2) run the external exe + two Python pipelines for lp data
+    subprocess.run(["wine64", exe_path], cwd=data_path, check=True)
+    subprocess.run(["python3", "pipeline/od_link_mapping_route.py"], 
+                   cwd=PROJECT_ROOT, check=True)
+    subprocess.run(["python3", "pipeline/update_lp_odlink.py"], 
+                   cwd=PROJECT_ROOT, check=True)
+
 def calculate_mse(matrix, data_path, exe_path, results_path, link_performance_csv, gt_dict): 
     # matrix: 56 * 56
     # Convert matrix to demand file and run simulation
-
-    pd.DataFrame(matrix, index=zone_labels, columns=zone_labels).to_csv(os.path.join(data_path, "demand.csv"))
-
-    # simulate 
-    # Run the executable
-    start = timeit.default_timer()
-    subprocess.run(["wine64", exe_path], cwd=data_path)
-    stop = timeit.default_timer()
-    total = stop - start
-    print(f"Time taken for one simulation: {total}")
-    subprocess.run(["python3", "pipeline/od_link_mapping_route.py"], cwd=PROJECT_ROOT, check = True)
-    subprocess.run(["python3", "pipeline/update_lp_odlink.py"], cwd=PROJECT_ROOT, check = True)
-
-    mse_start = timeit.default_timer()
+    run_simulation(matrix)
     df_sim = pd.read_csv(link_performance_csv, usecols=["link_id", "volume"])
     df_sim["link_id"] = df_sim["link_id"].astype(str)
     df_valid = df_sim[df_sim["link_id"].isin(gt_dict)]
@@ -93,9 +96,6 @@ def calculate_mse(matrix, data_path, exe_path, results_path, link_performance_cs
 
     mse = np.mean((sim_vol - gt_vol) ** 2)
     
-    mse_stop = timeit.default_timer()
-    mse_total = mse_stop - mse_start
-    print(f"Time taken for MSE: {mse_total}")
     mse_history_file = os.path.join(results_path, "mse_history.txt")
     with open(mse_history_file, 'a+') as file:
         file.write(str(mse)+"\n")
@@ -187,7 +187,7 @@ model = AutoModelForCausalLM.from_pretrained(
     torch_dtype=torch.float16)
 model.eval()
 
-def model_prompt(link_id, abs_error, sampled_od_pairs, simulated_vol, obs_count):
+def model_prompt(link_id, abs_error, sampled_od_pairs, simulated_vol, obs_count, top_k_candidates, sample_k):
     """
     sampled_od_pairs is now a list of [((i_int, j_int), flow_val), ...]
     """
@@ -206,7 +206,9 @@ def model_prompt(link_id, abs_error, sampled_od_pairs, simulated_vol, obs_count)
     The ground truth volume: {obs_count}
     The absolute error, which is calculated as: abs(Simulated Volume - Ground Truth Volume) = {abs_error}
 
-    The following {sample_size} highest‐flow OD elements (i,j) that contribute most to this link, along with their current flow values:
+    OD Pair Sampling Details:
+    - From the top {top_k_candidates} highest-flow OD elements contributing to this link, we have randomly sampled {sample_k} OD pairs for you to adjust.
+    - These {sample_size} OD pairs and their current flow values are listed below:
     {pairs_str}
 
     Your Task:
@@ -340,6 +342,12 @@ for global_iter in range(max_global_iterations):
     if early_stop:
         break
     print(f"Global iteration: {global_iter}")
+    baseline_mse = calculate_mse(  # calculate_mse will re-run sim and need to compute MSE
+        current_matrix,
+        data_path, exe_path, results_path,
+        link_performance_csv, gt_dict
+    )
+    print(f"Baseline MSE: {baseline_mse:.4f}")
     # ensures to check sorted links after improvement was found. this is because simulated volume keeps changing
     sorted_links = calculate_abs_error(link_performance_csv, gt_dict)
     sorted_links = [lk for lk in sorted_links if lk not in no_improvement_links] # if sorted link is in the not improved list, skip it
@@ -364,14 +372,14 @@ for global_iter in range(max_global_iterations):
             if not sampled_od_pairs:
                 print(f"No OD pairs found for link {link_id}. Skipping.")
                 break
-            # get absolute error for that link id
+            # get absolute error for that link id and read current baseline volumes
             simulated_vol, obs_count = get_link_data(link_id, link_performance_csv, gt_dict)
             if simulated_vol is None or obs_count is None:
                 print(f"Skipping link {link_id} due to missing data.")
                 continue
-
-            abs_error = get_abs_error(link_id, link_performance_csv, gt_dict)
-            prompt = model_prompt(link_id, abs_error, sampled_od_pairs, simulated_vol, obs_count)
+            
+            abs_error = abs(simulated_vol - obs_count)
+            prompt = model_prompt(link_id, abs_error, sampled_od_pairs, simulated_vol, obs_count, top_k_candidates, sample_k)
             # pass everything to llm and output the dictionary
             llm_output_dict = generate_output(prompt, model, tokenizer, working_dir, link_id, attempt, results_path) 
             updated_pairs = llm_output_dict
@@ -401,7 +409,8 @@ for global_iter in range(max_global_iterations):
                     best_matrix=best_matrix
                 )
                 break
-
+            else:
+                run_simulation(current_matrix)
         if not improvement_found:
             print(f"No improvement found for link {link_id} after {num_iterations} attempts. Moving to next link.\n")
             # increase failure count for this link
