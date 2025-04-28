@@ -12,9 +12,12 @@
       "gt_data": "data/ground_truth_obs_count.json"
     },
     "hyperparams": {
-      "num_iterations": 5,
-      "max_global_iterations": 100,
-      "max_fail_passes": 3
+      "top_n_links": 5,
+      "top_k_candidates": 50,
+      "sample_k": 30,
+      "num_iterations": 3,
+      "max_global_iterations": 50,
+      "max_fail_passes": 2
     },
     "timestamp": "10_00_AM"
   }

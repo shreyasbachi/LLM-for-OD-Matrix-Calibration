@@ -52,7 +52,7 @@ shutil.copy(link_performance_csv, os.path.join(results_path, Path(link_performan
 #subprocess.run(["wine64", exe_path], cwd=data_path)
 
 #file_path  = initial_demand_xlsm
-demand_csv = os.path.join(PROJECT_ROOT, "datasets", "demand", "demand_12:00 PM.csv")
+demand_csv = os.path.join(PROJECT_ROOT, "datasets", "demand", "demand_12_00_PM.csv")
 demand_df = pd.read_csv(demand_csv, index_col=0)
 #df_ini = extrac_column_info(file_path)
 zone_labels = list(demand_df.index.astype(str))
@@ -134,36 +134,38 @@ def get_link_data(link_id, link_performance_csv, gt_dict):
         return None, None
     return float(row.iloc[0]["volume"]), float(gt_dict[str(link_id)])
 
-# sample od pairs link_id and path to the link_performance_odlink_delta2.csv
-def sample_od_pairs(link_id, link_perform_odlink, current_matrix, top_k: int = 30):
-    df = pd.read_csv(link_perform_odlink, dtype=str)
-    row = df[df['link_id'] == link_id]
+# sample od pairs link_id and path to the odlink
+def sample_od_pairs(link_id, odlink_csv, current_matrix,
+                    top_k_candidates: int, sample_k: int):
+    df = pd.read_csv(odlink_csv, dtype=str)
+    row = df.loc[df['link_id']==link_id]
     if row.empty:
-        print(f"No entry found for link_id={link_id}")
         return []
 
-    # 2) Parse the od_pairs string into (i,j) tuples
-    od_str = row.iloc[0]['od_pairs'] or ""
+    raw = row.iloc[0].get('od_pairs',"")
+    # guard against NaN or non-strings
+    od_str = "" if pd.isna(raw) else str(raw)
+
     parsed = re.findall(r"\((\d+),\s*(\d+)\)", od_str)
     if not parsed:
-        print(f"No OD pairs listed for link_id={link_id}")
         return []
 
-    # 3) Build a list of ((i,j), flow) for all pairs
-    pairs_with_flow = []
-    for i_str, j_str in parsed:
-        i, j = int(i_str), int(j_str)
-        # guard in case current_matrix shape mismatches
+    # build list [((i,j),flow),…]
+    pairs = []
+    for i_s,j_s in parsed:
+        i,j = int(i_s), int(j_s)
         if 0 <= i < current_matrix.shape[0] and 0 <= j < current_matrix.shape[1]:
-            flow = float(current_matrix[i, j])
-            pairs_with_flow.append(((i, j), flow))
-
-    if not pairs_with_flow:
+            pairs.append(((i,j), float(current_matrix[i,j])))
+    if not pairs:
         return []
 
-    # 4) Sort by flow descending and pick top_k
-    pairs_with_flow.sort(key=lambda x: x[1], reverse=True)
-    return pairs_with_flow[:min(top_k, len(pairs_with_flow))]
+    # 1) sort by flow descending
+    pairs.sort(key=lambda x: x[1], reverse=True)
+    # 2) candidate pool
+    candidates = pairs[: min(top_k_candidates, len(pairs))]
+    k = min(sample_k, len(candidates))
+    # 3) random (uniform) sampling
+    return random.sample(candidates, k)
 
 # load LLaMa 3.3-70B model
 model_name = "meta-llama/Llama-3.3-70B-Instruct"
@@ -316,21 +318,23 @@ best_mse = baseline_mse
 best_matrix = baseline_matrix.copy()
 print(f"Baseline MSE: {baseline_mse}")
 sorted_links = calculate_abs_error(link_performance_csv, gt_dict)
-top_links = sorted_links[:20] # top 20 links
-print(f"Top 20 links with highest abs error: {top_links}")
+k = config["hyperparams"]["top_n_links"]
+top_links = sorted_links[:k] # top k links
+print(f"Top {k} links with highest abs error: {top_links}")
 current_matrix = baseline_matrix.copy()
 
-num_iterations = config["hyperparams"]["num_iterations"] # number of attempts per link, currently 5
+num_iterations = config["hyperparams"]["num_iterations"] # number of attempts per link
 # in each global iteration, if a link has failed to optimize we add it here to this dictionary
 max_global_iterations = config["hyperparams"]["max_global_iterations"] # how many times you want to re-check top errors overall
 max_fail_passes = config["hyperparams"]["max_fail_passes"] # currently set as 2
-
+sample_k = config["hyperparams"]["sample_k"]
+top_k_candidates = config["hyperparams"]["top_k_candidates"]
 fail_pass_count = {}
 no_improvement_links = set()
 # for plotting purposes, store the MSE each time it improves
 improvements_list = []
 
-early_stop = False # performance checker flag for genetic algorithm
+early_stop = False # performance checker flag
 for global_iter in range(max_global_iterations):
     # check if we converged around 27k to compare to genetic algorithm
     if early_stop:
@@ -343,8 +347,8 @@ for global_iter in range(max_global_iterations):
         print("No valid links remain for calibration. Exiting.")
         break  # exits the global_iter loop
 
-    top_links = sorted_links[:20]
-    print(f"Top 20 links with highest abs error: {top_links}")
+    top_links = sorted_links[:k] # top k links
+    print(f"Top {k} links with highest abs error: {top_links}")
     #improvement_this_cycle = False
     # iterate through top links
     for link_id in top_links:
@@ -353,10 +357,10 @@ for global_iter in range(max_global_iterations):
             print(f"Skipping link {link_id} due to repeated failures.")
             continue
 
-        # 5 attempts for each link
+        #  attempts for each link
         for attempt in range(num_iterations):
-            print(f"\nLink: {link_id}, Attempt: {attempt+1} of 5")
-            sampled_od_pairs = sample_od_pairs(link_id, link_perform_odlink, current_matrix, top_k = 30)
+            print(f"\nLink: {link_id}, Attempt: {attempt+1} of {num_iterations}")
+            sampled_od_pairs = sample_od_pairs(link_id, link_perform_odlink, current_matrix, top_k_candidates, sample_k)
             if not sampled_od_pairs:
                 print(f"No OD pairs found for link {link_id}. Skipping.")
                 break
